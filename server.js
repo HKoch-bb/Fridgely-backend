@@ -2,85 +2,12 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const OpenAI = require("openai");
-const mongoose = require("mongoose");
-const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "15mb" }));
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-/* ── MongoDB ── */
-if (process.env.MONGODB_URI) {
-  mongoose.connect(process.env.MONGODB_URI)
-    .then(() => console.log("✅ MongoDB connected"))
-    .catch(err => console.error("❌ MongoDB error:", err));
-} else {
-  console.warn("⚠️  MONGODB_URI not set — auth disabled");
-}
-
-/* ── User Model ── */
-const userSchema = new mongoose.Schema({
-  name:      { type: String, required: true, trim: true },
-  email:     { type: String, required: true, unique: true, lowercase: true, trim: true },
-  password:  { type: String, required: true },
-  createdAt: { type: Date, default: Date.now },
-});
-const User = mongoose.model("User", userSchema);
-
-/* ── JWT ── */
-const JWT_SECRET = process.env.JWT_SECRET || "chefmind_dev_secret_change_in_prod";
-const signToken = (user) => jwt.sign(
-  { id: user._id, name: user.name, email: user.email },
-  JWT_SECRET, { expiresIn: "7d" }
-);
-const authMiddleware = (req, res, next) => {
-  const token = req.headers.authorization?.replace("Bearer ", "");
-  if (!token) return res.status(401).json({ error: "No token" });
-  try { req.user = jwt.verify(token, JWT_SECRET); next(); }
-  catch { res.status(401).json({ error: "Invalid token" }); }
-};
-
-/* ── Auth Routes ── */
-app.post("/auth/register", async (req, res) => {
-  try {
-    const { name, email, password } = req.body;
-    if (!name?.trim() || !email?.trim() || !password)
-      return res.status(400).json({ error: "Name, email and password are required" });
-    if (password.length < 6)
-      return res.status(400).json({ error: "Password must be at least 6 characters" });
-    const exists = await User.findOne({ email: email.toLowerCase() });
-    if (exists) return res.status(400).json({ error: "Email already registered" });
-    const hash = await bcrypt.hash(password, 12);
-    const user = await User.create({ name: name.trim(), email, password: hash });
-    const token = signToken(user);
-    res.status(201).json({ token, user: { id: user._id, name: user.name, email: user.email } });
-  } catch (err) {
-    console.error("Register:", err);
-    res.status(500).json({ error: "Registration failed" });
-  }
-});
-
-app.post("/auth/login", async (req, res) => {
-  try {
-    const { email, password } = req.body;
-    if (!email?.trim() || !password)
-      return res.status(400).json({ error: "Email and password required" });
-    const user = await User.findOne({ email: email.toLowerCase() });
-    if (!user) return res.status(401).json({ error: "Invalid email or password" });
-    const valid = await bcrypt.compare(password, user.password);
-    if (!valid) return res.status(401).json({ error: "Invalid email or password" });
-    const token = signToken(user);
-    res.json({ token, user: { id: user._id, name: user.name, email: user.email } });
-  } catch (err) {
-    console.error("Login:", err);
-    res.status(500).json({ error: "Login failed" });
-  }
-});
-
-app.get("/auth/me", authMiddleware, (req, res) => res.json({ user: req.user }));
 
 /* ── Cache ── */
 const cache = new Map();
