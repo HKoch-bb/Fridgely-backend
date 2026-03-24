@@ -430,6 +430,63 @@ RETURN VALID JSON ONLY:
   }
 });
 
+/* ── Generate By Nutrition ── */
+app.post("/generate-by-nutrition", async (req, res) => {
+  try {
+    const { targets = {}, filters = {}, language = "English" } = req.body;
+    const targetLines = [
+      targets.calories && `- Calories per serving: ~${targets.calories} kcal`,
+      targets.protein  && `- Protein per serving: ~${targets.protein}g`,
+      targets.carbs    && `- Carbs per serving: ~${targets.carbs}g`,
+      targets.fat      && `- Fat per serving: ~${targets.fat}g`,
+    ].filter(Boolean);
+    if (!targetLines.length) return res.status(400).json({ error: "No nutrition targets provided" });
+
+    const filterLines = buildFilterLines(filters);
+    const filterBlock = filterLines ? `\nFILTER CONSTRAINTS:\n${filterLines}\n` : "";
+    const langLine = buildLanguageLine(language);
+    const systemMsg = `You are a professional nutritionist and chef.${langLine}`;
+
+    const prompt = `${filterBlock}
+Generate exactly 4 distinct recipes that match these per-serving nutrition targets as closely as possible:
+${targetLines.join("\n")}
+${filterLines ? "All filter constraints above must be strictly followed." : ""}
+No duplicate titles. Each recipe must be practical and cookable.
+
+RETURN VALID JSON ONLY:
+{
+  "recipes": [
+    {
+      "title": "",
+      "preview": "",
+      "calories": 0,
+      "protein_g": 0,
+      "carbs_g": 0,
+      "fat_g": 0,
+      "match_note": "one sentence on how well this matches the targets"
+    }
+  ]
+}`;
+
+    const response = await withRetry(() =>
+      openai.chat.completions.create({
+        model: "gpt-4.1-mini",
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: systemMsg },
+          { role: "user", content: prompt },
+        ],
+        max_tokens: 1200,
+      })
+    );
+    const data = JSON.parse(response.choices[0].message.content);
+    res.json({ recipes: (data.recipes || []).slice(0, 4) });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to generate nutrition-based recipes" });
+  }
+});
+
 /* ── Start ── */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 ChefMind running on http://localhost:${PORT}`));
