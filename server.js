@@ -531,6 +531,79 @@ RETURN VALID JSON ONLY:
   }
 });
 
+/* ── AI Chef Chat ── */
+app.post("/chat", async (req, res) => {
+  try {
+    const {
+      messages = [],
+      pantry = [],
+      savedRecipeNames = [],
+      language = "English",
+    } = req.body;
+
+    if (!messages.length) return res.status(400).json({ error: "No messages" });
+
+    const pantryInStock = pantry.filter(i => i.inStock !== false);
+    const pantryStr = pantryInStock.length
+      ? pantryInStock.map(i => [i.qty, i.unit, i.name].filter(Boolean).join(" ")).join(", ")
+      : "No pantry items added yet";
+
+    const savedStr = savedRecipeNames.length
+      ? savedRecipeNames.slice(0, 20).join(", ")
+      : "No saved recipes yet";
+
+    const langInstruction = language !== "English"
+      ? `\nIMPORTANT: Respond in ${language} only.`
+      : "";
+
+    const systemPrompt = `You are ChefMind AI — a warm, expert personal chef assistant built into the ChefMind cooking app. You have full knowledge of the user's kitchen context.
+
+## User's Current Pantry
+${pantryStr}
+
+## User's Saved Recipes
+${savedStr}
+
+## Your Capabilities
+- Suggest recipes using pantry ingredients (reference them by name)
+- Help adapt any recipe (make it vegan, gluten-free, lower calorie, etc.)
+- Answer cooking technique questions with clear, practical advice
+- Suggest food & drink pairings (wine, cocktails, sides)
+- Help troubleshoot cooking mistakes ("my sauce is too salty — how do I fix it?")
+- Provide substitution ideas for any ingredient
+- Give meal prep tips and time-saving strategies
+- Explain food science in simple terms
+- Help scale recipes up or down
+
+## Response Style
+- Be warm, conversational and encouraging — like a knowledgeable friend in the kitchen
+- When listing steps or options, use clear numbered lists or bullet points
+- Reference the user's actual pantry ingredients when relevant ("Since you have rice and eggs, you could make...")
+- Keep responses focused and practical — avoid unnecessary filler
+- For recipes, always include rough cook time and difficulty
+- If asked something outside cooking/food, gently redirect back to culinary topics${langInstruction}`;
+
+    const openaiMessages = messages.map(m => ({ role: m.role, content: m.content }));
+
+    const response = await withRetry(() =>
+      openai.chat.completions.create({
+        model: "gpt-4.1-mini",
+        messages: [
+          { role: "system", content: systemPrompt },
+          ...openaiMessages,
+        ],
+        max_tokens: 1000,
+        temperature: 0.8,
+      })
+    );
+
+    res.json({ reply: response.choices[0].message.content });
+  } catch (err) {
+    console.error("Chat error:", err);
+    res.status(500).json({ error: "Chef is unavailable right now — please try again" });
+  }
+});
+
 /* ── Start ── */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 ChefMind running on http://localhost:${PORT}`));
