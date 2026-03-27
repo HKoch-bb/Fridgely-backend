@@ -1,88 +1,78 @@
 require("dotenv").config({ override: true });
 const express = require("express");
 const cors = require("cors");
-const rateLimit = require("express-rate-limit");
 const OpenAI = require("openai");
+const mongoose = require("mongoose");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "15mb" }));
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const JWT_SECRET = process.env.JWT_SECRET || "fridgely_dev_secret_change_in_prod";
 
-/* ── Rate Limiters ───────────────────────────────────────────────────────────
- *
- *  Four tiers based on cost and abuse surface:
- *
- *  heavyLimiter   — Full recipe/meal-plan generation (GPT-4.1-mini, long prompts)
- *                   15 requests per 15 min per IP. ~1 call/min max burst.
- *
- *  standardLimiter — Lighter AI calls: details, subs, swaps, nutrition summary
- *                   30 requests per 15 min per IP.
- *
- *  chatLimiter    — Streaming chat. Shorter window (5 min) to prevent spam.
- *                   20 messages per 5 min per IP.
- *
- *  visionLimiter  — Image identify (GPT-4o vision). Most expensive endpoint.
- *                   8 requests per 15 min per IP.
- *
- *  imageLimiter   — Pexels proxy. Not an LLM call, but rate-limit anyway.
- *                   60 requests per 15 min per IP.
- */
+/* ── MongoDB ── */
+mongoose.connect(process.env.MONGODB_URI || "mongodb://localhost:27017/fridgely")
+  .then(() => console.log("✅ MongoDB connected"))
+  .catch(err => console.error("❌ MongoDB error:", err));
 
-const heavyLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 15,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: {
-    error: "Too many generation requests. Please wait a few minutes and try again.",
-  },
-  skip: (req) => process.env.NODE_ENV === "test",
+/* ── User Schema ── */
+const userSchema = new mongoose.Schema({
+  name:         { type: String, required: true, trim: true },
+  email:        { type: String, required: true, unique: true, lowercase: true, trim: true },
+  password:     { type: String, required: true, minlength: 6 },
+  pantryItems:  [{ name: String, qty: String, unit: String, inStock: Boolean }],
+  savedRecipes: [mongoose.Schema.Types.Mixed],
+  groceryList:  [{ name: String, qty: String, unit: String, addedFrom: String }],
+  recipeHistory:[{ title: String, viewedAt: String, viewCount: Number, firstViewedAt: String }],
+  recipeRatings:{ type: Map, of: Number, default: new Map() },
+  recipeNotes:  { type: Map, of: String, default: new Map() },
+  language:     { type: String, default: "English" },
+  pageActivity: [{ page: String, timestamp: { type: Date, default: Date.now } }],
+}, { timestamps: true });
+
+userSchema.pre("save", async function(next) {
+  if (this.isModified("password")) this.password = await bcrypt.hash(this.password, 12);
+  next();
 });
 
-const standardLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 30,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: {
-    error: "Too many requests. Please slow down and try again shortly.",
-  },
-  skip: (req) => process.env.NODE_ENV === "test",
-});
+const User = mongoose.model("User", userSchema);
 
-const chatLimiter = rateLimit({
-  windowMs: 5 * 60 * 1000,
-  max: 20,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: {
-    error: "Too many chat messages. Give the chef a moment! 🧑‍🍳",
-  },
-  skip: (req) => process.env.NODE_ENV === "test",
-});
+/* ── RecipeRating Schema (community ratings) ── */
+const recipeRatingSchema = new mongoose.Schema({
+  recipe: { type: String, required: true },
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  rating: { type: Number, min: 1, max: 5, required: true },
+}, { timestamps: true });
+recipeRatingSchema.index({ recipe: 1, userId: 1 }, { unique: true });
+const RecipeRating = mongoose.model("RecipeRating", recipeRatingSchema);
 
-const visionLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 8,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: {
-    error: "Too many image scans. Please wait before scanning another photo.",
-  },
-  skip: (req) => process.env.NODE_ENV === "test",
-});
+/* ── Auth Middleware ── */
+const auth = async (req, res, next) => {
+  const token = req.headers.authorization?.replace("Bearer ", "");
+  if (!token) return res.status(401).json({ error: "Authentication required" });
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = await User.findById(decoded.id).select("-password");
+    if (!req.user) return res.status(401).json({ error: "User not found" });
+    next();
+  } catch { res.status(401).json({ error: "Invalid or expired token" }); }
+};
 
-const imageLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 60,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: "Too many image requests." },
-  skip: (req) => process.env.NODE_ENV === "test",
-});
+const genToken = (id) => jwt.sign({ id }, JWT_SECRET, { expiresIn: "30d" });
 
+const serializeUser = (u) => ({
+  id: u._id, name: u.name, email: u.email,
+  pantryItems:   u.pantryItems  || [],
+  savedRecipes:  u.savedRecipes || [],
+  groceryList:   u.groceryList  || [],
+  recipeHistory: u.recipeHistory|| [],
+  recipeRatings: Object.fromEntries(u.recipeRatings || new Map()),
+  recipeNotes:   Object.fromEntries(u.recipeNotes   || new Map()),
+  language:      u.language || "English",
+});
 /* ── Cache ── */
 const cache = new Map();
 const CACHE_TTL = 1000 * 60 * 10;
@@ -95,14 +85,9 @@ const getCache = (key) => {
 };
 
 /* ── Retry ── */
-async function withRetry(fn, retries = 2, attempt = 0) {
+async function withRetry(fn, retries = 2) {
   try { return await fn(); }
-  catch (err) {
-    if (retries === 0) throw err;
-    // Exponential backoff: 500ms, 1000ms, …
-    await new Promise(r => setTimeout(r, 500 * Math.pow(2, attempt)));
-    return withRetry(fn, retries - 1, attempt + 1);
-  }
+  catch (err) { if (retries === 0) throw err; return withRetry(fn, retries - 1); }
 }
 
 /* ── Helpers ── */
@@ -140,11 +125,8 @@ const normalizeFlexible = (r, i) => ({
   missing_ingredients: (r?.missing_ingredients || []).map(m => ({ name: m.name || "", qty: m.qty || "", unit: m.unit || "" })),
 });
 
-/* ── Health ── */
-app.get("/", (req, res) => res.send("✅ ChefMind API running"));
-
 /* ── Pexels Image Proxy ── */
-app.get("/image", imageLimiter, async (req, res) => {
+app.get("/image", async (req, res) => {
   try {
     const query = (req.query.q || "food").trim();
     const cacheKey = `img:${query.toLowerCase()}`;
@@ -169,7 +151,7 @@ app.get("/image", imageLimiter, async (req, res) => {
 });
 
 /* ── Identify Ingredients from Image ── */
-app.post("/identify-image", visionLimiter, async (req, res) => {
+app.post("/identify-image", async (req, res) => {
   try {
     const { base64, mimeType = "image/jpeg" } = req.body;
     if (!base64) return res.status(400).json({ error: "No image data" });
@@ -204,8 +186,11 @@ RETURN VALID JSON ONLY:
   }
 });
 
+/* ── Health ── */
+app.get("/", (req, res) => res.send("✅ ChefMind API running"));
+
 /* ── Generate Recipes ── */
-app.post("/generate-recipes", heavyLimiter, async (req, res) => {
+app.post("/generate-recipes", async (req, res) => {
   try {
     const { ingredients = [], filters = {}, language = "English" } = req.body;
     if (!ingredients.length) return res.status(400).json({ error: "No ingredients" });
@@ -261,7 +246,7 @@ RETURN VALID JSON ONLY:
 });
 
 /* ── Generate Meal Plan ── */
-app.post("/generate-meal-plan", heavyLimiter, async (req, res) => {
+app.post("/generate-meal-plan", async (req, res) => {
   try {
     const { ingredients = [], filters = {}, mode = "pantry", language = "English" } = req.body;
     if (!ingredients.length) return res.status(400).json({ error: "No ingredients" });
@@ -331,7 +316,7 @@ RETURN VALID JSON ONLY:
 });
 
 /* ── Recipe Details ── */
-app.post("/recipe-details", standardLimiter, async (req, res) => {
+app.post("/recipe-details", async (req, res) => {
   try {
     const { recipeName, language = "English" } = req.body;
     const cacheKey = `details:${recipeName}:${language}`;
@@ -378,7 +363,7 @@ RETURN VALID JSON ONLY:
 });
 
 /* ── Generate By Name ── */
-app.post("/generate-by-name", heavyLimiter, async (req, res) => {
+app.post("/generate-by-name", async (req, res) => {
   try {
     const { recipeName, filters = {}, language = "English" } = req.body;
     if (!recipeName?.trim()) return res.status(400).json({ error: "No recipe name" });
@@ -440,7 +425,7 @@ RETURN VALID JSON ONLY:
 });
 
 /* ── Ingredient Substitution ── */
-app.post("/ingredient-sub", standardLimiter, async (req, res) => {
+app.post("/ingredient-sub", async (req, res) => {
   try {
     const { ingredient, recipeName, language = "English" } = req.body;
     if (!ingredient) return res.status(400).json({ error: "No ingredient" });
@@ -476,7 +461,7 @@ RETURN VALID JSON ONLY:
 });
 
 /* ── Nutrition Summary ── */
-app.post("/nutrition-summary", standardLimiter, async (req, res) => {
+app.post("/nutrition-summary", async (req, res) => {
   try {
     const { mealNames = [] } = req.body;
     if (!mealNames.length) return res.status(400).json({ error: "No meals" });
@@ -511,7 +496,7 @@ RETURN VALID JSON ONLY:
 });
 
 /* ── Swap Single Meal ── */
-app.post("/swap-meal", standardLimiter, async (req, res) => {
+app.post("/swap-meal", async (req, res) => {
   try {
     const { day, mealType, currentMeal, ingredients = [], filters = {}, language = "English" } = req.body;
     if (!day || !mealType) return res.status(400).json({ error: "Missing day or mealType" });
@@ -553,7 +538,7 @@ RETURN VALID JSON ONLY:
 });
 
 /* ── Generate By Nutrition ── */
-app.post("/generate-by-nutrition", heavyLimiter, async (req, res) => {
+app.post("/generate-by-nutrition", async (req, res) => {
   try {
     const { targets = {}, filters = {}, language = "English" } = req.body;
     const targetLines = [
@@ -612,7 +597,7 @@ RETURN VALID JSON ONLY:
 });
 
 /* ── AI Chef Chat ── */
-app.post("/chat", chatLimiter, async (req, res) => {
+app.post("/chat", async (req, res) => {
   try {
     const {
       messages = [],
@@ -682,6 +667,115 @@ ${savedStr}
     console.error("Chat error:", err);
     res.status(500).json({ error: "Chef is unavailable right now — please try again" });
   }
+});
+
+/* ── Auth Routes ── */
+app.post("/auth/signup", async (req, res) => {
+  try {
+    const { name, email, password } = req.body;
+    if (!name?.trim() || !email?.trim() || !password) return res.status(400).json({ error: "All fields required" });
+    if (password.length < 6) return res.status(400).json({ error: "Password must be at least 6 characters" });
+    if (await User.findOne({ email: email.toLowerCase() })) return res.status(400).json({ error: "Email already registered" });
+    const user = await User.create({ name: name.trim(), email, password });
+    res.json({ token: genToken(user._id), user: serializeUser(user) });
+  } catch (err) { console.error("Signup:", err); res.status(500).json({ error: "Signup failed" }); }
+});
+
+app.post("/auth/login", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) return res.status(400).json({ error: "Email and password required" });
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user || !(await bcrypt.compare(password, user.password)))
+      return res.status(401).json({ error: "Invalid email or password" });
+    res.json({ token: genToken(user._id), user: serializeUser(user) });
+  } catch (err) { console.error("Login:", err); res.status(500).json({ error: "Login failed" }); }
+});
+
+app.get("/auth/me", auth, (req, res) => res.json({ user: serializeUser(req.user) }));
+
+/* ── User Data Sync Routes ── */
+app.get("/user/data", auth, async (req, res) => res.json(serializeUser(req.user)));
+
+app.put("/user/pantry", auth, async (req, res) => {
+  await User.findByIdAndUpdate(req.user._id, { pantryItems: req.body.pantryItems || [] });
+  res.json({ ok: true });
+});
+
+app.put("/user/saved-recipes", auth, async (req, res) => {
+  await User.findByIdAndUpdate(req.user._id, { savedRecipes: req.body.savedRecipes || [] });
+  res.json({ ok: true });
+});
+
+app.put("/user/grocery", auth, async (req, res) => {
+  await User.findByIdAndUpdate(req.user._id, { groceryList: req.body.groceryList || [] });
+  res.json({ ok: true });
+});
+
+app.put("/user/history", auth, async (req, res) => {
+  await User.findByIdAndUpdate(req.user._id, { recipeHistory: req.body.recipeHistory || [] });
+  res.json({ ok: true });
+});
+
+app.put("/user/notes", auth, async (req, res) => {
+  await User.findByIdAndUpdate(req.user._id, {
+    recipeNotes: new Map(Object.entries(req.body.recipeNotes || {}))
+  });
+  res.json({ ok: true });
+});
+
+app.put("/user/language", auth, async (req, res) => {
+  await User.findByIdAndUpdate(req.user._id, { language: req.body.language });
+  res.json({ ok: true });
+});
+
+app.post("/user/rating", auth, async (req, res) => {
+  try {
+    const { recipe, rating } = req.body;
+    const user = await User.findById(req.user._id);
+    if (!rating || rating === 0) {
+      user.recipeRatings.delete(recipe);
+      await RecipeRating.deleteOne({ recipe, userId: req.user._id });
+    } else {
+      user.recipeRatings.set(recipe, rating);
+      await RecipeRating.findOneAndUpdate(
+        { recipe, userId: req.user._id },
+        { rating },
+        { upsert: true, new: true }
+      );
+    }
+    await user.save();
+    res.json({ ok: true });
+  } catch (err) { console.error("Rating:", err); res.status(500).json({ error: "Failed to save rating" }); }
+});
+
+app.post("/user/activity", auth, async (req, res) => {
+  try {
+    await User.findByIdAndUpdate(req.user._id, {
+      $push: { pageActivity: { $each: [{ page: req.body.page }], $slice: -500 } }
+    });
+    res.json({ ok: true });
+  } catch { res.json({ ok: true }); }
+});
+
+/* ── Community Top Rated ── */
+app.get("/top-rated", async (req, res) => {
+  try {
+    const results = await RecipeRating.aggregate([
+      { $group: {
+        _id: "$recipe",
+        avgRating: { $avg: "$rating" },
+        totalRatings: { $sum: 1 },
+      }},
+      { $sort: { avgRating: -1, totalRatings: -1 } },
+      { $limit: 30 },
+    ]);
+    res.json({ recipes: results.map(r => ({
+      title: r._id,
+      avgRating: Math.round(r.avgRating * 10) / 10,
+      totalRatings: r.totalRatings,
+    }))});
+  } catch (err) { console.error("Top rated:", err); res.status(500).json({ error: "Failed to fetch top rated" }); }
 });
 
 /* ── Start ── */
