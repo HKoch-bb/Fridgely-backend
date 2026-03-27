@@ -5,6 +5,8 @@ const OpenAI = require("openai");
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
+const nodemailer = require("nodemailer");
 
 const app = express();
 app.use(cors());
@@ -13,6 +15,74 @@ app.use(express.json({ limit: "15mb" }));
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const JWT_SECRET = process.env.JWT_SECRET || "fridgely_dev_secret_change_in_prod";
 
+/* ── Email Transporter ── */
+const mailer = nodemailer.createTransport({
+  host:   process.env.EMAIL_HOST || "smtp.gmail.com",
+  port:   parseInt(process.env.EMAIL_PORT || "587"),
+  secure: process.env.EMAIL_SECURE === "true",
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
+});
+
+const FROM_NAME  = process.env.EMAIL_FROM_NAME  || "Fridgely";
+const FROM_EMAIL = process.env.EMAIL_FROM_EMAIL || process.env.EMAIL_USER || "noreply@fridgely.app";
+const APP_URL    = process.env.APP_URL || "http://localhost:3000";
+
+async function sendMail({ to, subject, html }) {
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+    console.warn("⚠️  Email not configured — skipping send to", to);
+    return;
+  }
+  await mailer.sendMail({ from: `"${FROM_NAME}" <${FROM_EMAIL}>`, to, subject, html });
+}
+
+/* ── Email Templates ── */
+const welcomeEmail = (name) => `
+<div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;background:#0d0f0a;color:#f9fafb;border-radius:12px;overflow:hidden">
+  <div style="background:linear-gradient(135deg,#4a7a3a,#5a7c4a);padding:32px 40px;text-align:center">
+    <h1 style="margin:0;font-size:28px;letter-spacing:-0.5px">🥬 Fridgely</h1>
+    <p style="margin:6px 0 0;opacity:0.8;font-size:14px">Cook what you've got.</p>
+  </div>
+  <div style="padding:40px">
+    <h2 style="color:#a8c298;margin-top:0">Welcome, ${name}! 👋</h2>
+    <p style="color:#d1d5db;line-height:1.7">Your Fridgely account is all set. Here's what you can do right now:</p>
+    <ul style="color:#d1d5db;line-height:2;padding-left:20px">
+      <li>🧺 <strong>Add pantry items</strong> — tell Fridgely what's in your fridge</li>
+      <li>🍳 <strong>Generate AI recipes</strong> — get personalised meal ideas instantly</li>
+      <li>📅 <strong>Plan your week</strong> — organise meals across Monday–Friday</li>
+      <li>🛒 <strong>Build a grocery list</strong> — never forget an ingredient again</li>
+      <li>⭐ <strong>Save favourite recipes</strong> — your personal cookbook, always synced</li>
+    </ul>
+    <div style="text-align:center;margin:36px 0 0">
+      <a href="${APP_URL}" style="background:linear-gradient(135deg,#5a7c4a,#4a6a3a);color:#fff;text-decoration:none;padding:14px 36px;border-radius:10px;font-weight:700;font-size:15px">Open Fridgely →</a>
+    </div>
+  </div>
+  <div style="padding:24px 40px;text-align:center;border-top:1px solid rgba(255,255,255,0.08)">
+    <p style="color:#6b7280;font-size:12px;margin:0">You're receiving this because you created an account at Fridgely.<br/>If this wasn't you, you can safely ignore this email.</p>
+  </div>
+</div>`;
+
+const resetEmail = (name, resetUrl) => `
+<div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;background:#0d0f0a;color:#f9fafb;border-radius:12px;overflow:hidden">
+  <div style="background:linear-gradient(135deg,#4a7a3a,#5a7c4a);padding:32px 40px;text-align:center">
+    <h1 style="margin:0;font-size:28px;letter-spacing:-0.5px">🥬 Fridgely</h1>
+    <p style="margin:6px 0 0;opacity:0.8;font-size:14px">Cook what you've got.</p>
+  </div>
+  <div style="padding:40px">
+    <h2 style="color:#a8c298;margin-top:0">Reset your password</h2>
+    <p style="color:#d1d5db;line-height:1.7">Hi ${name}, we received a request to reset your Fridgely password. Click the button below — this link expires in <strong>1 hour</strong>.</p>
+    <div style="text-align:center;margin:36px 0">
+      <a href="${resetUrl}" style="background:linear-gradient(135deg,#5a7c4a,#4a6a3a);color:#fff;text-decoration:none;padding:14px 36px;border-radius:10px;font-weight:700;font-size:15px">Reset Password →</a>
+    </div>
+    <p style="color:#6b7280;font-size:13px">Or paste this link into your browser:<br/><span style="color:#a8c298;word-break:break-all">${resetUrl}</span></p>
+  </div>
+  <div style="padding:24px 40px;text-align:center;border-top:1px solid rgba(255,255,255,0.08)">
+    <p style="color:#6b7280;font-size:12px;margin:0">If you didn't request a password reset, you can safely ignore this email.</p>
+  </div>
+</div>`;
+
 /* ── MongoDB ── */
 mongoose.connect(process.env.MONGODB_URI || "mongodb://localhost:27017/fridgely")
   .then(() => console.log("✅ MongoDB connected"))
@@ -20,9 +90,12 @@ mongoose.connect(process.env.MONGODB_URI || "mongodb://localhost:27017/fridgely"
 
 /* ── User Schema ── */
 const userSchema = new mongoose.Schema({
-  name:         { type: String, required: true, trim: true },
-  email:        { type: String, required: true, unique: true, lowercase: true, trim: true },
-  password:     { type: String, required: true, minlength: 6 },
+  name:                 { type: String, required: true, trim: true },
+  username:             { type: String, required: true, unique: true, lowercase: true, trim: true },
+  email:                { type: String, required: true, unique: true, lowercase: true, trim: true },
+  password:             { type: String, required: true },
+  resetPasswordToken:   { type: String, default: null },
+  resetPasswordExpires: { type: Date,   default: null },
   pantryItems:  [{ name: String, qty: String, unit: String, inStock: Boolean }],
   savedRecipes: [mongoose.Schema.Types.Mixed],
   groceryList:  [{ name: String, qty: String, unit: String, addedFrom: String }],
@@ -65,7 +138,7 @@ const auth = async (req, res, next) => {
 const genToken = (id) => jwt.sign({ id }, JWT_SECRET, { expiresIn: "30d" });
 
 const serializeUser = (u) => ({
-  id: u._id, name: u.name, email: u.email,
+  id: u._id, name: u.name, username: u.username, email: u.email,
   pantryItems:   u.pantryItems  || [],
   savedRecipes:  u.savedRecipes || [],
   groceryList:   u.groceryList  || [],
@@ -670,30 +743,130 @@ ${savedStr}
   }
 });
 
+/* ── Password Strength Validator ── */
+const PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?`~]).{8,}$/;
+const validatePassword = (p) => {
+  if (!p || p.length < 8)           return "Password must be at least 8 characters";
+  if (!/[A-Z]/.test(p))             return "Password must contain at least one uppercase letter";
+  if (!/[a-z]/.test(p))             return "Password must contain at least one lowercase letter";
+  if (!/\d/.test(p))                return "Password must contain at least one number";
+  if (!/[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?`~]/.test(p)) return "Password must contain at least one special character";
+  return null;
+};
+
 /* ── Auth Routes ── */
 app.post("/auth/signup", async (req, res) => {
   try {
-    const { name, email, password } = req.body;
-    if (!name?.trim() || !email?.trim() || !password) return res.status(400).json({ error: "All fields required" });
-    if (password.length < 6) return res.status(400).json({ error: "Password must be at least 6 characters" });
-    if (await User.findOne({ email: email.toLowerCase() })) return res.status(400).json({ error: "Email already registered" });
-    const user = await User.create({ name: name.trim(), email, password });
+    const { name, username, email, password } = req.body;
+    if (!name?.trim() || !username?.trim() || !email?.trim() || !password)
+      return res.status(400).json({ error: "All fields required" });
+
+    // Username: alphanumeric + underscores only, 3-20 chars
+    if (!/^[a-zA-Z0-9_]{3,20}$/.test(username.trim()))
+      return res.status(400).json({ error: "Username must be 3–20 characters and contain only letters, numbers, or underscores" });
+
+    const pwErr = validatePassword(password);
+    if (pwErr) return res.status(400).json({ error: pwErr });
+
+    if (await User.findOne({ email: email.toLowerCase() }))
+      return res.status(400).json({ error: "Email already registered" });
+    if (await User.findOne({ username: username.toLowerCase() }))
+      return res.status(400).json({ error: "Username already taken — please choose another" });
+
+    const user = await User.create({ name: name.trim(), username: username.trim(), email, password });
+
+    // Send welcome email (non-blocking)
+    sendMail({
+      to: user.email,
+      subject: `Welcome to Fridgely, ${user.name}! 🥬`,
+      html: welcomeEmail(user.name),
+    }).catch(err => console.error("Welcome email failed:", err));
+
     res.json({ token: genToken(user._id), user: serializeUser(user) });
   } catch (err) { console.error("Signup:", err); res.status(500).json({ error: "Signup failed" }); }
 });
 
 app.post("/auth/login", async (req, res) => {
   try {
-    const { email, password } = req.body;
-    if (!email || !password) return res.status(400).json({ error: "Email and password required" });
-    const user = await User.findOne({ email: email.toLowerCase() });
+    const { identifier, password } = req.body;   // identifier = email OR username
+    if (!identifier || !password)
+      return res.status(400).json({ error: "Email/username and password required" });
+
+    const isEmail = identifier.includes("@");
+    const user = isEmail
+      ? await User.findOne({ email: identifier.toLowerCase() })
+      : await User.findOne({ username: identifier.toLowerCase() });
+
     if (!user || !(await bcrypt.compare(password, user.password)))
-      return res.status(401).json({ error: "Invalid email or password" });
+      return res.status(401).json({ error: "Invalid credentials" });
+
     res.json({ token: genToken(user._id), user: serializeUser(user) });
   } catch (err) { console.error("Login:", err); res.status(500).json({ error: "Login failed" }); }
 });
 
 app.get("/auth/me", auth, (req, res) => res.json({ user: serializeUser(req.user) }));
+
+/* ── Forgot Password ── */
+app.post("/auth/forgot-password", async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: "Email is required" });
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    // Always return 200 to prevent user enumeration
+    if (!user) return res.json({ ok: true });
+
+    const token   = crypto.randomBytes(32).toString("hex");
+    const expires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+
+    user.resetPasswordToken   = token;
+    user.resetPasswordExpires = expires;
+    await user.save();
+
+    const resetUrl = `${APP_URL}/reset-password?token=${token}`;
+    await sendMail({
+      to: user.email,
+      subject: "Reset your Fridgely password",
+      html: resetEmail(user.name, resetUrl),
+    });
+
+    res.json({ ok: true });
+  } catch (err) { console.error("Forgot password:", err); res.status(500).json({ error: "Failed to send reset email" }); }
+});
+
+/* ── Reset Password ── */
+app.post("/auth/reset-password", async (req, res) => {
+  try {
+    const { token, password } = req.body;
+    if (!token || !password) return res.status(400).json({ error: "Token and new password required" });
+
+    const pwErr = validatePassword(password);
+    if (pwErr) return res.status(400).json({ error: pwErr });
+
+    const user = await User.findOne({
+      resetPasswordToken: token,
+      resetPasswordExpires: { $gt: new Date() },
+    });
+    if (!user) return res.status(400).json({ error: "Reset link is invalid or has expired" });
+
+    user.password             = password;  // pre-save hook will hash it
+    user.resetPasswordToken   = null;
+    user.resetPasswordExpires = null;
+    await user.save();
+
+    res.json({ ok: true, message: "Password reset successfully" });
+  } catch (err) { console.error("Reset password:", err); res.status(500).json({ error: "Failed to reset password" }); }
+});
+
+/* ── Check username availability ── */
+app.get("/auth/check-username", async (req, res) => {
+  try {
+    const { username } = req.query;
+    if (!username) return res.status(400).json({ error: "Username required" });
+    const exists = await User.findOne({ username: username.toLowerCase() });
+    res.json({ available: !exists });
+  } catch { res.status(500).json({ error: "Check failed" }); }
+});
 
 /* ── User Data Sync Routes ── */
 app.get("/user/data", auth, async (req, res) => res.json(serializeUser(req.user)));
