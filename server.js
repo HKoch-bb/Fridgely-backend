@@ -260,6 +260,56 @@ RETURN VALID JSON ONLY:
   }
 });
 
+/* ── Parse voice transcript into structured ingredients ── */
+app.post("/parse-voice-ingredients", async (req, res) => {
+  try {
+    const { text } = req.body;
+    if (!text) return res.status(400).json({ error: "No text provided" });
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{
+        role: "user",
+        content: `Extract ingredients from this spoken text and return ONLY valid JSON, no markdown:
+"${text}"
+
+Return:
+{"ingredients":[{"name":"eggs","qty":"2","unit":"piece"},{"name":"garlic","qty":"3","unit":"clove"}]}
+
+Rules: use simple ingredient names, estimate qty if mentioned, use units like piece/cup/tbsp/tsp/g/kg/ml/l/bunch/handful, if no quantity mentioned use empty string ""`
+      }],
+      max_tokens: 300,
+    });
+    const raw = response.choices[0].message.content.replace(/```json|```/g, "").trim();
+    const data = JSON.parse(raw);
+    res.json(data);
+  } catch (err) {
+    console.error("Voice parse:", err);
+    res.status(500).json({ error: "Failed to parse ingredients" });
+  }
+});
+
+/* ── Barcode lookup via Open Food Facts ── */
+app.get("/barcode/:code", async (req, res) => {
+  try {
+    const { code } = req.params;
+    const response = await fetch(
+      `https://world.openfoodfacts.org/api/v0/product/${code}.json`,
+      { headers: { "User-Agent": "Fridgely/1.0 (https://fridgely.app)" } }
+    );
+    const data = await response.json();
+    if (data.status !== 1) return res.status(404).json({ error: "Product not found" });
+    const p = data.product;
+    const name = p.product_name || p.generic_name || p.product_name_en || "";
+    const quantity = p.quantity || "";
+    const category = p.categories_tags?.[0]?.replace("en:", "") || "";
+    if (!name) return res.status(404).json({ error: "Product name not found" });
+    res.json({ name: name.toLowerCase(), quantity, category, brand: p.brands || "" });
+  } catch (err) {
+    console.error("Barcode:", err);
+    res.status(500).json({ error: "Barcode lookup failed" });
+  }
+});
+
 /* ── Health ── */
 app.get("/", (req, res) => res.send("✅ ChefMind API running"));
 
