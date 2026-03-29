@@ -7,6 +7,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const nodemailer = require("nodemailer");
+const axios = require("axios"); // ✅ FIX: use axios instead of native fetch
 
 const app = express();
 app.use(cors());
@@ -210,16 +211,16 @@ app.get("/image", async (req, res) => {
     const pexelsKey = process.env.PEXELS_API_KEY;
     if (!pexelsKey) return res.status(500).json({ error: "PEXELS_API_KEY not set" });
 
-    const r = await fetch(
+    // ✅ FIX: use axios instead of native fetch
+    const { data } = await axios.get(
       `https://api.pexels.com/v1/search?query=${encodeURIComponent(query + " food dish")}&per_page=5&orientation=landscape`,
-      { headers: { Authorization: pexelsKey } }
+      { headers: { Authorization: pexelsKey }, timeout: 8000 }
     );
-    if (!r.ok) return res.status(502).json({ error: "Pexels failed" });
-    const data = await r.json();
     const url = (data.photos || [])[0]?.src.large || null;
     if (url) cache.set(cacheKey, { data: url, expiry: Date.now() + 1000 * 60 * 60 * 24 });
     res.json({ url });
   } catch (err) {
+    console.error("Image fetch:", err.message);
     res.status(500).json({ error: "Image fetch failed" });
   }
 });
@@ -289,23 +290,36 @@ Rules: use simple ingredient names, estimate qty if mentioned, use units like pi
 });
 
 /* ── Barcode lookup via Open Food Facts ── */
+// ✅ FIX: replaced native fetch (not available in Node < 18) with axios
 app.get("/barcode/:code", async (req, res) => {
   try {
     const { code } = req.params;
-    const response = await fetch(
+
+    const { data } = await axios.get(
       `https://world.openfoodfacts.org/api/v0/product/${code}.json`,
-      { headers: { "User-Agent": "Fridgely/1.0 (https://fridgely.app)" } }
+      {
+        headers: { "User-Agent": "Fridgely/1.0 (https://fridgely.app)" },
+        timeout: 8000,
+      }
     );
-    const data = await response.json();
-    if (data.status !== 1) return res.status(404).json({ error: "Product not found" });
+
+    if (data.status !== 1)
+      return res.status(404).json({ error: "Product not found" });
+
     const p = data.product;
     const name = p.product_name || p.generic_name || p.product_name_en || "";
     const quantity = p.quantity || "";
     const category = p.categories_tags?.[0]?.replace("en:", "") || "";
-    if (!name) return res.status(404).json({ error: "Product name not found" });
+
+    if (!name)
+      return res.status(404).json({ error: "Product name not found" });
+
     res.json({ name: name.toLowerCase(), quantity, category, brand: p.brands || "" });
   } catch (err) {
-    console.error("Barcode:", err);
+    console.error("Barcode error:", err.message);
+    if (err.response) {
+      return res.status(404).json({ error: "Product not found" });
+    }
     res.status(500).json({ error: "Barcode lookup failed" });
   }
 });
