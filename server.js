@@ -922,6 +922,48 @@ app.post("/auth/reset-password", async (req, res) => {
   } catch (err) { console.error("Reset password:", err); res.status(500).json({ error: "Failed to reset password" }); }
 });
 
+/* ── Update Profile (name + email) ── */
+app.put("/user/profile", auth, async (req, res) => {
+  try {
+    const { name, email } = req.body;
+    if (!name?.trim() || !email?.trim())
+      return res.status(400).json({ error: "Name and email required" });
+
+    // Check email not taken by another user
+    const existing = await User.findOne({ email: email.toLowerCase(), _id: { $ne: req.user._id } });
+    if (existing) return res.status(400).json({ error: "Email already in use by another account" });
+
+    const updated = await User.findByIdAndUpdate(
+      req.user._id,
+      { name: name.trim(), email: email.toLowerCase().trim() },
+      { new: true }
+    ).select("-password");
+
+    res.json({ ok: true, user: serializeUser(updated) });
+  } catch (err) { console.error("Profile update:", err); res.status(500).json({ error: "Failed to update profile" }); }
+});
+
+/* ── Change Password ── */
+app.post("/user/change-password", auth, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword)
+      return res.status(400).json({ error: "Both current and new password required" });
+
+    const pwErr = validatePassword(newPassword);
+    if (pwErr) return res.status(400).json({ error: pwErr });
+
+    const user = await User.findById(req.user._id);
+    const valid = await bcrypt.compare(currentPassword, user.password);
+    if (!valid) return res.status(401).json({ error: "Current password is incorrect" });
+
+    user.password = newPassword; // pre-save hook hashes it
+    await user.save();
+
+    res.json({ ok: true });
+  } catch (err) { console.error("Change password:", err); res.status(500).json({ error: "Failed to change password" }); }
+});
+
 /* ── Check username availability ── */
 app.get("/auth/check-username", async (req, res) => {
   try {
