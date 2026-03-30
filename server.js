@@ -397,29 +397,39 @@ app.post("/generate-meal-plan", async (req, res) => {
     if (cached) return res.json(cached);
 
     const filterLines = buildFilterLines(filters);
-    const filterBlock = filterLines ? `\nFILTERS:\n${filterLines}\n` : "";
+    const filterBlock = filterLines ? `\nFILTER CONSTRAINTS:\n${filterLines}\n` : "";
     const langLine = buildLanguageLine(language);
     const systemMsg = `You are a professional meal planner.${langLine}`;
 
     const ingredientRules = mode === "pantry"
-      ? `Use ONLY: ${formattedIngredients}. No extras.`
-      : `Use: ${formattedIngredients}. Basic staples (salt, oil) assumed.`;
+      ? `STRICT RULES: Use ONLY: ${formattedIngredients}. No assumptions, no staples unless listed.`
+      : `GROCERY RULES: Full haul: ${formattedIngredients}. Distribute across 5 days, maximize variety. Basic staples (salt, oil) assumed available.`;
 
-    const prompt = `${ingredientRules}${filterBlock}
-5-day plan (Mon–Fri), 4 meals/day. Each: name + 1-line note.
+    const prompt = `${ingredientRules}
+${filterBlock}
+Create a 5-day meal plan (Mon-Fri), 4 meals/day (Breakfast, Lunch, Dinner, Snack).
+Each meal: a name + 1-line note.
+
 RETURN VALID JSON ONLY:
-{"plan":[{"day":"Monday","meals":{"Breakfast":{"name":"","note":""},"Lunch":{"name":"","note":""},"Dinner":{"name":"","note":""},"Snack":{"name":"","note":""}}},{"day":"Tuesday","meals":{"Breakfast":{"name":"","note":""},"Lunch":{"name":"","note":""},"Dinner":{"name":"","note":""},"Snack":{"name":"","note":""}}},{"day":"Wednesday","meals":{"Breakfast":{"name":"","note":""},"Lunch":{"name":"","note":""},"Dinner":{"name":"","note":""},"Snack":{"name":"","note":""}}},{"day":"Thursday","meals":{"Breakfast":{"name":"","note":""},"Lunch":{"name":"","note":""},"Dinner":{"name":"","note":""},"Snack":{"name":"","note":""}}},{"day":"Friday","meals":{"Breakfast":{"name":"","note":""},"Lunch":{"name":"","note":""},"Dinner":{"name":"","note":""},"Snack":{"name":"","note":""}}}]}`;
+{
+  "plan": [
+    { "day": "Monday",    "meals": { "Breakfast": { "name": "", "note": "" }, "Lunch": { "name": "", "note": "" }, "Dinner": { "name": "", "note": "" }, "Snack": { "name": "", "note": "" } } },
+    { "day": "Tuesday",   "meals": { "Breakfast": { "name": "", "note": "" }, "Lunch": { "name": "", "note": "" }, "Dinner": { "name": "", "note": "" }, "Snack": { "name": "", "note": "" } } },
+    { "day": "Wednesday", "meals": { "Breakfast": { "name": "", "note": "" }, "Lunch": { "name": "", "note": "" }, "Dinner": { "name": "", "note": "" }, "Snack": { "name": "", "note": "" } } },
+    { "day": "Thursday",  "meals": { "Breakfast": { "name": "", "note": "" }, "Lunch": { "name": "", "note": "" }, "Dinner": { "name": "", "note": "" }, "Snack": { "name": "", "note": "" } } },
+    { "day": "Friday",    "meals": { "Breakfast": { "name": "", "note": "" }, "Lunch": { "name": "", "note": "" }, "Dinner": { "name": "", "note": "" }, "Snack": { "name": "", "note": "" } } }
+  ]
+}`;
 
     const response = await withRetry(() =>
       openai.chat.completions.create({
         model: "gpt-4.1-mini",
         response_format: { type: "json_object" },
-        temperature: 0,
-        max_tokens: 1600,
         messages: [
           { role: "system", content: systemMsg },
           { role: "user", content: prompt },
         ],
+        max_tokens: 2000,
       })
     );
 
@@ -712,45 +722,54 @@ app.post("/generate-by-nutrition", async (req, res) => {
   try {
     const { targets = {}, filters = {}, language = "English" } = req.body;
     const targetLines = [
-      targets.calories && `- Calories: ~${targets.calories} kcal`,
-      targets.protein  && `- Protein: ~${targets.protein}g`,
-      targets.carbs    && `- Carbs: ~${targets.carbs}g`,
-      targets.fat      && `- Fat: ~${targets.fat}g`,
-      targets.fiber    && `- Fiber: ~${targets.fiber}g`,
+      targets.calories && `- Calories per serving: ~${targets.calories} kcal`,
+      targets.protein  && `- Protein per serving: ~${targets.protein}g`,
+      targets.carbs    && `- Carbs per serving: ~${targets.carbs}g`,
+      targets.fat      && `- Fat per serving: ~${targets.fat}g`,
+      targets.fiber    && `- Dietary Fiber per serving: ~${targets.fiber}g`,
     ].filter(Boolean);
     if (!targetLines.length) return res.status(400).json({ error: "No nutrition targets provided" });
 
-    const cacheKey = `nutrition:${JSON.stringify({ ...targets, ...filters, language })}`;
-    const cached = getCache(cacheKey);
-    if (cached) return res.json(cached);
-
     const filterLines = buildFilterLines(filters);
-    const filterBlock = filterLines ? `\nFILTERS: ${filterLines}\n` : "";
+    const filterBlock = filterLines ? `\nFILTER CONSTRAINTS:\n${filterLines}\n` : "";
     const langLine = buildLanguageLine(language);
     const systemMsg = `You are a professional nutritionist and chef.${langLine}`;
 
-    const prompt = `${filterBlock}4 distinct recipes matching per-serving targets:
-${targetLines.join(", ")}
-No duplicates. Practical and cookable.
+    const prompt = `${filterBlock}
+Generate exactly 4 distinct recipes that match these per-serving nutrition targets as closely as possible:
+${targetLines.join("\n")}
+${filterLines ? "All filter constraints above must be strictly followed." : ""}
+No duplicate titles. Each recipe must be practical and cookable.
+
 RETURN VALID JSON ONLY:
-{"recipes":[{"title":"","preview":"","calories":0,"protein_g":0,"carbs_g":0,"fat_g":0,"fiber_g":0,"match_note":""}]}`;
+{
+  "recipes": [
+    {
+      "title": "",
+      "preview": "",
+      "calories": 0,
+      "protein_g": 0,
+      "carbs_g": 0,
+      "fat_g": 0,
+      "fiber_g": 0,
+      "match_note": "one sentence on how well this matches the targets"
+    }
+  ]
+}`;
 
     const response = await withRetry(() =>
       openai.chat.completions.create({
         model: "gpt-4.1-mini",
         response_format: { type: "json_object" },
-        temperature: 0,
-        max_tokens: 800,
         messages: [
           { role: "system", content: systemMsg },
           { role: "user", content: prompt },
         ],
+        max_tokens: 1200,
       })
     );
     const data = JSON.parse(response.choices[0].message.content);
-    const result = { recipes: (data.recipes || []).slice(0, 4) };
-    setCache(cacheKey, result);
-    res.json(result);
+    res.json({ recipes: (data.recipes || []).slice(0, 4) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Failed to generate nutrition-based recipes" });
