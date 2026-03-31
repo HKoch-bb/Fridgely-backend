@@ -85,8 +85,8 @@ const resetEmail = (name, resetUrl) => `
 </div>`;
 
 /* ── MongoDB Atlas ── */
-const MONGO_URI = process.env.MONGODB_URI ||
-  "mongodb+srv://AgenticAI_Admin:pass@agenticai.kypkolp.mongodb.net/SpoonFed?retryWrites=true&w=majority&appName=AgenticAI";
+const MONGO_URI = process.env.MONGODB_URI;
+if (!MONGO_URI) throw new Error("MONGODB_URI not set");
 
 mongoose.connect(MONGO_URI, {
   serverSelectionTimeoutMS: 10000,
