@@ -85,8 +85,8 @@ const resetEmail = (name, resetUrl) => `
 </div>`;
 
 /* ── MongoDB Atlas ── */
-const MONGO_URI = process.env.MONGODB_URI;
-if (!MONGO_URI) throw new Error("MONGODB_URI not set");
+const MONGO_URI = process.env.MONGODB_URI ||
+  "mongodb+srv://AgenticAI_Admin:pass@agenticai.kypkolp.mongodb.net/SpoonFed?retryWrites=true&w=majority&appName=AgenticAI";
 
 mongoose.connect(MONGO_URI, {
   serverSelectionTimeoutMS: 10000,
@@ -105,6 +105,8 @@ mongoose.connect(MONGO_URI, {
     await RecipeRating.collection.createIndex({ recipe: 1 }, { background: true });
     await RecipeRating.collection.createIndex({ rating: -1 }, { background: true });
 
+    await CommunityRecipe.collection.createIndex({ "uploadedBy.userId": 1 }, { background: true });
+    await CommunityRecipe.collection.createIndex({ createdAt: -1 }, { background: true });
     console.log("✅ All collection indexes verified");
   })
   .catch(err => {
@@ -151,6 +153,35 @@ const recipeRatingSchema = new mongoose.Schema({
 }, { timestamps: true });
 recipeRatingSchema.index({ recipe: 1, userId: 1 }, { unique: true });
 const RecipeRating = mongoose.model("RecipeRating", recipeRatingSchema.set("collection", "recipe_ratings"));
+
+/* ── Community Recipe Schema ── */
+const communityRecipeSchema = new mongoose.Schema({
+  title:      { type: String, required: true, trim: true },
+  overview:   { type: String, default: "" },
+  servings:   { type: String, default: "" },
+  prep_time:  { type: String, default: "" },
+  cook_time:  { type: String, default: "" },
+  difficulty: { type: String, default: "" },
+  cuisine:    { type: String, default: "" },
+  ingredients: {
+    main: [{ name: String, quantity: String }],
+  },
+  steps: [{ text: String, time_min: Number }],
+  nutrition: {
+    calories: String, protein: String, carbs: String, fat: String,
+  },
+  tags: [String],
+  rawInput: { type: String, default: "" },
+  uploadedBy: {
+    userId:   { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    name:     { type: String, default: "" },
+    username: { type: String, default: "" },
+  },
+}, { timestamps: true, collection: "community_recipes" });
+
+communityRecipeSchema.index({ "uploadedBy.userId": 1 });
+communityRecipeSchema.index({ createdAt: -1 });
+const CommunityRecipe = mongoose.model("CommunityRecipe", communityRecipeSchema);
 
 /* ── Auth Middleware ── */
 const auth = async (req, res, next) => {
@@ -372,14 +403,21 @@ app.post("/generate-recipes", async (req, res) => {
     const systemMsg = `You are a professional chef generating recipe suggestions.${langLine}`;
 
     const prompt = `${filterBlock}
+You have a user who ONLY has these ingredients: ${formattedIngredients}
+They have NOTHING else. No pantry staples. No oil unless listed. No salt unless listed. No water unless listed.
+
 === SECTION 1: STRICT RECIPES (exactly 3) ===
-- Use ONLY listed ingredients. No substitutions or additions.${filterLines ? "\n- Must satisfy every filter above." : ""}
+HARD RULE: Every single ingredient in these recipes MUST appear in the list above. Zero exceptions.
+Do NOT assume oil, salt, water, or any staple is available unless explicitly listed.
+If you cannot make 3 genuinely good recipes with ONLY these ingredients, make fewer — do not invent ingredients.
+${filterLines ? "- Must satisfy every filter above." : ""}
 
 === SECTION 2: FLEXIBLE RECIPES (exactly 3) ===
-- Use listed as BASE. May add extras (list in missing_ingredients).${filterLines ? "\n- Must satisfy every filter above." : ""}
+Use listed ingredients as the BASE. You MAY suggest 1-3 extra ingredients per recipe.
+List ALL extras in missing_ingredients — be specific with quantities.
+${filterLines ? "- Must satisfy every filter above." : ""}
 
-Available: ${formattedIngredients}
-No duplicate titles. 1-line preview each.
+No duplicate titles across sections. 1-line preview each.
 
 RETURN VALID JSON ONLY:
 {
@@ -430,13 +468,18 @@ app.post("/generate-meal-plan", async (req, res) => {
     const systemMsg = `You are a professional meal planner.${langLine}`;
 
     const ingredientRules = mode === "pantry"
-      ? `STRICT RULES: Use ONLY: ${formattedIngredients}. No assumptions, no staples unless listed.`
+      ? `⚠️ STRICT PANTRY MODE — USER HAS NOTHING ELSE.
+The user has ONLY these ingredients: ${formattedIngredients}.
+They have NO other food. No oil unless listed. No salt unless listed. No water unless listed.
+Every single meal name in the plan MUST be makeable using ONLY these ingredients.
+If there are not enough ingredients for 20 varied meals, repeat ingredients creatively across days.
+Do NOT invent, assume or add any ingredient not in the list above.`
       : `GROCERY RULES: Full haul: ${formattedIngredients}. Distribute across 5 days, maximize variety. Basic staples (salt, oil) assumed available.`;
 
     const prompt = `${ingredientRules}
 ${filterBlock}
 Create a 5-day meal plan (Mon-Fri), 4 meals/day (Breakfast, Lunch, Dinner, Snack).
-Each meal: a name + 1-line note.
+Each meal: a name + 1-line note explaining how it uses only the listed ingredients.
 
 RETURN VALID JSON ONLY:
 {
@@ -486,15 +529,24 @@ RETURN VALID JSON ONLY:
 /* ── Recipe Details ── */
 app.post("/recipe-details", async (req, res) => {
   try {
-    const { recipeName, language = "English" } = req.body;
-    const cacheKey = `details:${recipeName}:${language}`;
+    const { recipeName, language = "English", strictIngredients = [] } = req.body;
+    const cacheKey = `details:${recipeName}:${language}:${strictIngredients.length ? "strict" : "free"}`;
     const cached = getCache(cacheKey);
     if (cached) return res.json(cached);
 
     const langLine = buildLanguageLine(language);
     const systemMsg = `You are a professional chef and nutritionist.${langLine}`;
+
+    // Build the ingredient constraint block for strict recipes
+    const strictBlock = strictIngredients.length > 0
+      ? `\n⚠️ STRICT CONSTRAINT: This recipe was generated for a user who ONLY has: ${strictIngredients.map(formatIngredient).join(", ")}.
+The ingredients list MUST use ONLY these items. Do NOT add any other ingredients.
+Adjust quantities and method to work with exactly what is listed above.
+If a standard version of this recipe needs extras, simplify it — do not invent ingredients.\n`
+      : "";
+
     const prompt = `Recipe for: ${recipeName}
-Include clear steps with timing. Each step needs "time_min".
+${strictBlock}Include clear steps with timing. Each step needs "time_min".
 RETURN VALID JSON ONLY:
 {"overview":"","servings":"","prep_time":"","cook_time":"","ingredients":{"main":[{"name":"","quantity":"","qty_number":0,"unit":""}]},"steps":[{"text":"","time_min":5}],"nutrition":{"calories":"","protein":"","carbs":"","fat":""}}`;
 
@@ -598,17 +650,20 @@ Steps need "time_min". RETURN VALID JSON ONLY:
 
 /* ── Prefetch Recipe Details (batch, background cache-warming) ── */
 app.post("/prefetch-details", async (req, res) => {
-  const { titles = [], language = "English" } = req.body;
-  // Return immediately — work happens in background
+  const { titles = [], language = "English", strictIngredients = [] } = req.body;
   res.json({ ok: true, count: titles.length });
 
   const langLine = buildLanguageLine(language);
   const systemMsg = `You are a professional chef and nutritionist.${langLine}`;
 
+  const strictBlock = strictIngredients.length > 0
+    ? `\n⚠️ STRICT CONSTRAINT: Use ONLY these ingredients: ${strictIngredients.map(formatIngredient).join(", ")}. No extras.\n`
+    : "";
+
   Promise.all(
     titles.map(async (recipeName) => {
-      const cacheKey = `details:${recipeName}:${language}`;
-      if (getCache(cacheKey)) return; // already cached, skip
+      const cacheKey = `details:${recipeName}:${language}:${strictIngredients.length ? "strict" : "free"}`;
+      if (getCache(cacheKey)) return;
       try {
         const response = await openai.chat.completions.create({
           model: "gpt-4.1-mini",
@@ -617,7 +672,7 @@ app.post("/prefetch-details", async (req, res) => {
           max_tokens: 1400,
           messages: [
             { role: "system", content: systemMsg },
-            { role: "user", content: `Recipe for: ${recipeName}\nSteps need "time_min". RETURN VALID JSON ONLY:\n{"overview":"","servings":"","prep_time":"","cook_time":"","ingredients":{"main":[{"name":"","quantity":"","qty_number":0,"unit":""}]},"steps":[{"text":"","time_min":5}],"nutrition":{"calories":"","protein":"","carbs":"","fat":""}}` },
+            { role: "user", content: `Recipe for: ${recipeName}\n${strictBlock}Steps need "time_min". RETURN VALID JSON ONLY:\n{"overview":"","servings":"","prep_time":"","cook_time":"","ingredients":{"main":[{"name":"","quantity":"","qty_number":0,"unit":""}]},"steps":[{"text":"","time_min":5}],"nutrition":{"calories":"","protein":"","carbs":"","fat":""}}` },
           ],
         });
         const data = JSON.parse(response.choices[0].message.content);
@@ -713,8 +768,11 @@ app.post("/swap-meal", async (req, res) => {
     const filterBlock = filterLines ? `\nFILTER CONSTRAINTS:\n${filterLines}\n` : "";
     const langLine = buildLanguageLine(language);
     const systemMsg = `You are a professional meal planner.${langLine}`;
+    const strict = req.body.strict === true;
     const ingredientHint = ingredients.length
-      ? `Available ingredients: ${ingredients.map(i => [i.qty, i.unit, i.name].filter(Boolean).join(" ")).join(", ")}.`
+      ? strict
+        ? `⚠️ STRICT: Use ONLY these ingredients — no extras: ${ingredients.map(i => [i.qty, i.unit, i.name].filter(Boolean).join(" ")).join(", ")}.`
+        : `Available ingredients: ${ingredients.map(i => [i.qty, i.unit, i.name].filter(Boolean).join(" ")).join(", ")}.`
       : "";
 
     const prompt = `${filterBlock}
@@ -1126,6 +1184,116 @@ app.get("/top-rated", async (req, res) => {
       totalRatings: r.totalRatings,
     }))});
   } catch (err) { console.error("Top rated:", err); res.status(500).json({ error: "Failed to fetch top rated" }); }
+});
+
+
+/* ── Upload & Refine Community Recipe ── */
+app.post("/community-recipes/upload", auth, async (req, res) => {
+  try {
+    const { rawText, language = "English" } = req.body;
+    if (!rawText || rawText.trim().length < 20)
+      return res.status(400).json({ error: "Please provide more recipe details" });
+
+    const prompt = `You are a recipe formatter. A user has submitted a recipe in raw form (typed, voice-transcribed, or extracted from a photo/file).
+
+Your ONLY job is to:
+1. Structure it into a clean, well-formatted recipe
+2. Keep ALL content exactly as the user intended — do NOT change ingredients, quantities, or cooking methods
+3. Fill in ONLY structural fields that are clearly missing (e.g. estimate difficulty, prep/cook time from the steps)
+4. Estimate nutrition per serving if not provided (rough estimates are fine)
+5. Output in ${language}
+
+Return ONLY valid JSON (no markdown, no extra text):
+{
+  "title": "Recipe name",
+  "overview": "1-2 sentence description of the dish",
+  "servings": "e.g. 4 servings",
+  "prep_time": "e.g. 15 mins",
+  "cook_time": "e.g. 30 mins",
+  "difficulty": "Easy|Medium|Hard",
+  "cuisine": "e.g. Indian, Italian, etc.",
+  "ingredients": {
+    "main": [{ "name": "ingredient name", "quantity": "amount and unit" }]
+  },
+  "steps": [{ "text": "step description", "time_min": 5 }],
+  "nutrition": { "calories": "per serving", "protein": "g", "carbs": "g", "fat": "g" },
+  "tags": ["tag1", "tag2"]
+}
+
+Raw recipe input:
+${rawText}`;
+
+    const completion = await withRetry(() =>
+      openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 1500,
+        temperature: 0.2,
+      })
+    );
+
+    let parsed;
+    try {
+      const text = completion.choices[0].message.content.trim().replace(/^```json|```$/g, "").trim();
+      parsed = JSON.parse(text);
+    } catch {
+      return res.status(500).json({ error: "Failed to parse recipe structure — try adding more detail" });
+    }
+
+    if (!parsed.title) return res.status(400).json({ error: "Could not extract a recipe title" });
+
+    const recipe = await CommunityRecipe.create({
+      ...parsed,
+      rawInput: rawText,
+      uploadedBy: {
+        userId:   req.user._id,
+        name:     req.user.name,
+        username: req.user.username,
+      },
+    });
+
+    res.json({ ok: true, recipe });
+  } catch (err) {
+    console.error("Community upload:", err);
+    res.status(500).json({ error: "Failed to upload recipe" });
+  }
+});
+
+/* ── Get Community Recipes (paginated) ── */
+app.get("/community-recipes", auth, async (req, res) => {
+  try {
+    const page  = Math.max(1, parseInt(req.query.page)  || 1);
+    const limit = Math.min(50, parseInt(req.query.limit) || 20);
+    const skip  = (page - 1) * limit;
+
+    const [recipes, total] = await Promise.all([
+      CommunityRecipe.find()
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      CommunityRecipe.countDocuments(),
+    ]);
+
+    res.json({ recipes, total, page, pages: Math.ceil(total / limit) });
+  } catch (err) {
+    console.error("Community fetch:", err);
+    res.status(500).json({ error: "Failed to fetch community recipes" });
+  }
+});
+
+/* ── Delete own community recipe ── */
+app.delete("/community-recipes/:id", auth, async (req, res) => {
+  try {
+    const recipe = await CommunityRecipe.findById(req.params.id);
+    if (!recipe) return res.status(404).json({ error: "Recipe not found" });
+    if (recipe.uploadedBy.userId.toString() !== req.user._id.toString())
+      return res.status(403).json({ error: "Not your recipe" });
+    await recipe.deleteOne();
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to delete" });
+  }
 });
 
 /* ── Start ── */
