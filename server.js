@@ -14,7 +14,7 @@ app.use(cors());
 app.use(express.json({ limit: "15mb" }));
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const JWT_SECRET = process.env.JWT_SECRET || "fridgely_dev_secret_change_in_prod";
+const JWT_SECRET = process.env.JWT_SECRET || "spoonfed_dev_secret_change_in_prod";
 
 /* ── Email Transporter ── */
 const mailer = nodemailer.createTransport({
@@ -27,8 +27,8 @@ const mailer = nodemailer.createTransport({
   },
 });
 
-const FROM_NAME  = process.env.EMAIL_FROM_NAME  || "Fridgely";
-const FROM_EMAIL = process.env.EMAIL_FROM_EMAIL || process.env.EMAIL_USER || "noreply@fridgely.app";
+const FROM_NAME  = process.env.EMAIL_FROM_NAME  || "SpoonFed";
+const FROM_EMAIL = process.env.EMAIL_FROM_EMAIL || process.env.EMAIL_USER || "noreply@spoonfed.app";
 const APP_URL    = process.env.APP_URL || "http://localhost:3000";
 
 async function sendMail({ to, subject, html }) {
@@ -43,37 +43,37 @@ async function sendMail({ to, subject, html }) {
 const welcomeEmail = (name) => `
 <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;background:#0d0f0a;color:#f9fafb;border-radius:12px;overflow:hidden">
   <div style="background:linear-gradient(135deg,#4a7a3a,#5a7c4a);padding:32px 40px;text-align:center">
-    <h1 style="margin:0;font-size:28px;letter-spacing:-0.5px">🥬 Fridgely</h1>
-    <p style="margin:6px 0 0;opacity:0.8;font-size:14px">Cook what you've got.</p>
+    <h1 style="margin:0;font-size:28px;letter-spacing:-0.5px">🥄 SpoonFed</h1>
+    <p style="margin:6px 0 0;opacity:0.8;font-size:14px">Your pantry, your recipes.</p>
   </div>
   <div style="padding:40px">
     <h2 style="color:#a8c298;margin-top:0">Welcome, ${name}! 👋</h2>
-    <p style="color:#d1d5db;line-height:1.7">Your Fridgely account is all set. Here's what you can do right now:</p>
+    <p style="color:#d1d5db;line-height:1.7">Your SpoonFed account is all set. Here's what you can do right now:</p>
     <ul style="color:#d1d5db;line-height:2;padding-left:20px">
-      <li>🧺 <strong>Add pantry items</strong> — tell Fridgely what's in your fridge</li>
+      <li>🧺 <strong>Add pantry items</strong> — tell SpoonFed what you've got</li>
       <li>🍳 <strong>Generate AI recipes</strong> — get personalised meal ideas instantly</li>
       <li>📅 <strong>Plan your week</strong> — organise meals across Monday–Friday</li>
       <li>🛒 <strong>Build a grocery list</strong> — never forget an ingredient again</li>
       <li>⭐ <strong>Save favourite recipes</strong> — your personal cookbook, always synced</li>
     </ul>
     <div style="text-align:center;margin:36px 0 0">
-      <a href="${APP_URL}" style="background:linear-gradient(135deg,#5a7c4a,#4a6a3a);color:#fff;text-decoration:none;padding:14px 36px;border-radius:10px;font-weight:700;font-size:15px">Open Fridgely →</a>
+      <a href="${APP_URL}" style="background:linear-gradient(135deg,#5a7c4a,#4a6a3a);color:#fff;text-decoration:none;padding:14px 36px;border-radius:10px;font-weight:700;font-size:15px">Open SpoonFed →</a>
     </div>
   </div>
   <div style="padding:24px 40px;text-align:center;border-top:1px solid rgba(255,255,255,0.08)">
-    <p style="color:#6b7280;font-size:12px;margin:0">You're receiving this because you created an account at Fridgely.<br/>If this wasn't you, you can safely ignore this email.</p>
+    <p style="color:#6b7280;font-size:12px;margin:0">You're receiving this because you created an account at SpoonFed.<br/>If this wasn't you, you can safely ignore this email.</p>
   </div>
 </div>`;
 
 const resetEmail = (name, resetUrl) => `
 <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;background:#0d0f0a;color:#f9fafb;border-radius:12px;overflow:hidden">
   <div style="background:linear-gradient(135deg,#4a7a3a,#5a7c4a);padding:32px 40px;text-align:center">
-    <h1 style="margin:0;font-size:28px;letter-spacing:-0.5px">🥬 Fridgely</h1>
-    <p style="margin:6px 0 0;opacity:0.8;font-size:14px">Cook what you've got.</p>
+    <h1 style="margin:0;font-size:28px;letter-spacing:-0.5px">🥄 SpoonFed</h1>
+    <p style="margin:6px 0 0;opacity:0.8;font-size:14px">Your pantry, your recipes.</p>
   </div>
   <div style="padding:40px">
     <h2 style="color:#a8c298;margin-top:0">Reset your password</h2>
-    <p style="color:#d1d5db;line-height:1.7">Hi ${name}, we received a request to reset your Fridgely password. Click the button below — this link expires in <strong>1 hour</strong>.</p>
+    <p style="color:#d1d5db;line-height:1.7">Hi ${name}, we received a request to reset your SpoonFed password. Click the button below — this link expires in <strong>1 hour</strong>.</p>
     <div style="text-align:center;margin:36px 0">
       <a href="${resetUrl}" style="background:linear-gradient(135deg,#5a7c4a,#4a6a3a);color:#fff;text-decoration:none;padding:14px 36px;border-radius:10px;font-weight:700;font-size:15px">Reset Password →</a>
     </div>
@@ -84,10 +84,38 @@ const resetEmail = (name, resetUrl) => `
   </div>
 </div>`;
 
-/* ── MongoDB ── */
-mongoose.connect(process.env.MONGODB_URI || "mongodb://localhost:27017/fridgely")
-  .then(() => console.log("✅ MongoDB connected"))
-  .catch(err => console.error("❌ MongoDB error:", err));
+/* ── MongoDB Atlas ── */
+const MONGO_URI = process.env.MONGODB_URI ||
+  "mongodb+srv://AgenticAI_Admin:pass@agenticai.kypkolp.mongodb.net/SpoonFed?retryWrites=true&w=majority&appName=AgenticAI";
+
+mongoose.connect(MONGO_URI, {
+  serverSelectionTimeoutMS: 10000,
+  socketTimeoutMS: 45000,
+})
+  .then(async () => {
+    console.log("✅ MongoDB Atlas connected → SpoonFed database");
+
+    // ── Ensure indexes exist on all collections ──
+    // Users: unique email + username
+    await User.collection.createIndex({ email: 1 }, { unique: true, background: true });
+    await User.collection.createIndex({ username: 1 }, { unique: true, background: true });
+    await User.collection.createIndex({ resetPasswordToken: 1 }, { background: true, sparse: true });
+    // RecipeRatings: compound unique (recipe + userId)
+    await RecipeRating.collection.createIndex({ recipe: 1, userId: 1 }, { unique: true, background: true });
+    await RecipeRating.collection.createIndex({ recipe: 1 }, { background: true });
+    await RecipeRating.collection.createIndex({ rating: -1 }, { background: true });
+
+    console.log("✅ All collection indexes verified");
+  })
+  .catch(err => {
+    console.error("❌ MongoDB Atlas connection error:", err.message);
+    process.exit(1);
+  });
+
+// Handle connection events
+mongoose.connection.on("disconnected", () => console.warn("⚠️  MongoDB disconnected — retrying..."));
+mongoose.connection.on("reconnected", () => console.log("✅ MongoDB reconnected"));
+mongoose.connection.on("error", err => console.error("❌ MongoDB runtime error:", err.message));
 
 /* ── User Schema ── */
 const userSchema = new mongoose.Schema({
@@ -105,7 +133,7 @@ const userSchema = new mongoose.Schema({
   recipeNotes:  { type: Map, of: String, default: new Map() },
   language:     { type: String, default: "English" },
   pageActivity: [{ page: String, timestamp: { type: Date, default: Date.now } }],
-}, { timestamps: true });
+}, { timestamps: true, collection: "users" });
 
 userSchema.pre("save", async function() {
   if (this.isModified("password")) {
@@ -122,7 +150,7 @@ const recipeRatingSchema = new mongoose.Schema({
   rating: { type: Number, min: 1, max: 5, required: true },
 }, { timestamps: true });
 recipeRatingSchema.index({ recipe: 1, userId: 1 }, { unique: true });
-const RecipeRating = mongoose.model("RecipeRating", recipeRatingSchema);
+const RecipeRating = mongoose.model("RecipeRating", recipeRatingSchema.set("collection", "recipe_ratings"));
 
 /* ── Auth Middleware ── */
 const auth = async (req, res, next) => {
@@ -298,7 +326,7 @@ app.get("/barcode/:code", async (req, res) => {
     const { data } = await axios.get(
       `https://world.openfoodfacts.org/api/v0/product/${code}.json`,
       {
-        headers: { "User-Agent": "Fridgely/1.0 (https://fridgely.app)" },
+        headers: { "User-Agent": "SpoonFed/1.0 (https://spoonfed.app)" },
         timeout: 8000,
       }
     );
@@ -325,7 +353,7 @@ app.get("/barcode/:code", async (req, res) => {
 });
 
 /* ── Health ── */
-app.get("/", (req, res) => res.send("✅ ChefMind API running"));
+app.get("/", (req, res) => res.send("✅ SpoonFed API running"));
 
 /* ── Generate Recipes ── */
 app.post("/generate-recipes", async (req, res) => {
@@ -801,7 +829,7 @@ app.post("/chat", async (req, res) => {
       ? `\nIMPORTANT: Respond in ${language} only.`
       : "";
 
-    const systemPrompt = `You are ChefMind AI — a warm, expert personal chef assistant built into the ChefMind cooking app. You have full knowledge of the user's kitchen context.
+    const systemPrompt = `You are SpoonFed AI — a warm, expert personal chef assistant built into the SpoonFed cooking app. You have full knowledge of the user's kitchen context.
 
 ## User's Current Pantry
 ${pantryStr}
@@ -884,7 +912,7 @@ app.post("/auth/signup", async (req, res) => {
     // Send welcome email (non-blocking)
     sendMail({
       to: user.email,
-      subject: `Welcome to Fridgely, ${user.name}! 🥬`,
+      subject: `Welcome to SpoonFed, ${user.name}! 🥄`,
       html: welcomeEmail(user.name),
     }).catch(err => console.error("Welcome email failed:", err));
 
@@ -932,7 +960,7 @@ app.post("/auth/forgot-password", async (req, res) => {
     const resetUrl = `${APP_URL}/reset-password?token=${token}`;
     await sendMail({
       to: user.email,
-      subject: "Reset your Fridgely password",
+      subject: "Reset your SpoonFed password",
       html: resetEmail(user.name, resetUrl),
     });
 
@@ -1102,4 +1130,4 @@ app.get("/top-rated", async (req, res) => {
 
 /* ── Start ── */
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`🚀 ChefMind running on http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`🚀 SpoonFed running on http://localhost:${PORT}`));
