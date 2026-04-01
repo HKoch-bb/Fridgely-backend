@@ -6,7 +6,7 @@ const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
-const nodemailer = require("nodemailer");
+const { Resend } = require("resend");
 const axios = require("axios"); // ✅ FIX: use axios instead of native fetch
 
 const app = express();
@@ -16,27 +16,25 @@ app.use(express.json({ limit: "15mb" }));
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const JWT_SECRET = process.env.JWT_SECRET || "spoonfed_dev_secret_change_in_prod";
 
-/* ── Email Transporter ── */
-const mailer = nodemailer.createTransport({
-  host:   process.env.EMAIL_HOST || "smtp.gmail.com",
-  port:   parseInt(process.env.EMAIL_PORT || "587"),
-  secure: process.env.EMAIL_SECURE === "true",
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-});
+/* ── Resend Email ── */
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 const FROM_NAME  = process.env.EMAIL_FROM_NAME  || "SpoonFed";
-const FROM_EMAIL = process.env.EMAIL_FROM_EMAIL || process.env.EMAIL_USER || "noreply@spoonfed.app";
+const FROM_EMAIL = process.env.EMAIL_FROM_EMAIL || "noreply@spoonfedai.food";
 const APP_URL    = process.env.APP_URL || "http://localhost:3000";
 
 async function sendMail({ to, subject, html }) {
-  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-    console.warn("⚠️  Email not configured — skipping send to", to);
+  if (!process.env.RESEND_API_KEY) {
+    console.warn("⚠️  RESEND_API_KEY not set — skipping email to", to);
     return;
   }
-  await mailer.sendMail({ from: `"${FROM_NAME}" <${FROM_EMAIL}>`, to, subject, html });
+  const { error } = await resend.emails.send({
+    from: `${FROM_NAME} <${FROM_EMAIL}>`,
+    to,
+    subject,
+    html,
+  });
+  if (error) throw new Error(error.message);
 }
 
 /* ── Email Templates ── */
